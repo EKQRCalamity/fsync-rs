@@ -9,3 +9,5 @@ edition = "2021"
 chrono = "*"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+sha2 = "*"
+data-encoding = "*"
