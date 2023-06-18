@@ -31,16 +31,42 @@ fn sha256_digest(path: &PathBuf) -> io::Result<String> {
     };
     Ok(HEXLOWER.encode(digest.as_ref()))
 }
+#[derive(Clone)]
+struct Console {
+    quiet: bool,
+    timestamp: bool,
+    timestamp_format: String,
+}
+
+impl Console {
+    pub fn new(quiet: bool, timestamp: bool, timestamp_format: String) -> Console {
+        return Console { quiet: quiet, timestamp: timestamp, timestamp_format: timestamp_format };
+    }
+
+    fn print(&self, mut outstr: String) {
+        if !self.quiet {
+            if self.timestamp {
+                let date = Local::now();
+                outstr = format!("[{}] {}", date.format(self.timestamp_format.as_str()), outstr);
+            }
+            println!("{}", outstr);
+        }
+    }
+
+    fn setquiet(&mut self, quiet: bool) {
+        self.quiet = quiet;
+    }
+}
 
 struct ArgPassThru {
     format: String,
-    format_out: String
-
+    format_out: String,
+    console: Console,
 }
 
 impl ArgPassThru {
-    pub fn new(format: String, format_out: String) -> ArgPassThru {
-        return ArgPassThru { format: format, format_out: format_out };
+    pub fn new(format: String, format_out: String, console: &Console) -> ArgPassThru {
+        return ArgPassThru { format: format, format_out: format_out, console: console.to_owned() };
     }
 
     fn setformat(&mut self, format: String) {
@@ -50,35 +76,62 @@ impl ArgPassThru {
     fn setformat_out(&mut self, format: String) {
         self.format_out = format;
     }
+
+    fn setconsole(&mut self, console: &Console) {
+        self.console = console.to_owned();
+    }
 }
 
 fn handleargs(args: &mut[String]) -> ArgPassThru {
-    let mut pass: ArgPassThru = ArgPassThru::new("".to_string(), "".to_string());
+    let con = Console::new(false, false, "".to_string());
+    let mut pass: ArgPassThru = ArgPassThru::new("".to_string(), "".to_string(), &con);
     if args.len() > 1 {
         let mut n: usize = 0;
         for argument in args {
-            if argument == "-h" {
+            if argument == "-h" || argument == "--help" {
                 println!("Following arguments are passable:\n -h            Shows this message.\n -c            Re-Enter config setup.\n -format       Change the source directory date format. (Default is none)\n -format_out   Change the output date format. (Default is none)\n -dformat      Sets the format and format_out to my defaults.");
                 std::process::exit(0);
-            } else if argument == "-c" {
+            } else if argument == "-c" || argument == "--config" {
                 configconstructor();
-            } else if argument == "--format" {
-                let format = env::args().nth(n + 1).unwrap();
+            } else if argument == "--format" || argument == "-fin" {
+                let format: String = match env::args().nth(n + 1) {
+                    Some(format) => format,
+                    None => {
+                        println!("Command line parameter after format must be passed. C[1] Exiting...");
+                        std::process::exit(0);
+                    },
+                };
                 if env::args().nth(n + 1).is_none() || format.is_empty() {
-                    panic!("Command line parameter after --format must be passed.");
+                    println!("Command line parameter after format must be passed. C[2] Exiting...");
+                    std::process::exit(0);
                 } else {
                     pass.setformat(format);
                 }
-            } else if argument == "--format_out" {
-                let format = env::args().nth(n + 1).unwrap();
+            } else if argument == "--format_out" || argument == "-fout" {
+                let format: String = match env::args().nth(n + 1) {
+                    Some(format) => format,
+                    None => {
+                        println!("Command line parameter after format out must be passed. C[1] Exiting...");
+                        std::process::exit(0);
+                    },
+                };
                 if env::args().nth(n + 1).is_none() || format.is_empty() {
-                    panic!("Command line parameter after --format must be passed.");
+                    println!("Command line parameter after format out must be passed. C[2] Exiting...");
+                    std::process::exit(0);
                 } else {
                     pass.setformat_out(format);
                 }
-            } else if argument == "--dformat" {
+            } else if argument == "--dformat" || argument == "-df" {
                 pass.setformat("%Y-%m-%d".to_string());
                 pass.setformat_out("%d-%m-%Y".to_string());
+            } else if argument == "-q" {
+                pass.console.setquiet(true);
+            } else if argument == "--timestamp" || argument == "-t" {
+                let format: String = match env::args().nth(n + 1) {
+                    Some(format) => format,
+                    None => "%H:%M:%S".to_string(),
+                };
+                pass.setconsole(&Console::new(pass.console.quiet, true, format));
             }
             n += 1;
         }
@@ -86,16 +139,17 @@ fn handleargs(args: &mut[String]) -> ArgPassThru {
     return pass;
 }
 
-fn copy_files(source_dir: &Path, destination_dir: &Path) -> io::Result<bool> {
+fn copy_files(source_dir: &Path, destination_dir: &Path, console: &Console) -> io::Result<bool> {
     let mut changed_files = false;
 
     if !destination_dir.exists() {
         fs::create_dir(destination_dir)?;
-        println!("Missing directory {} created", destination_dir.display());
+        console.print(format!("Missing directory {} created", destination_dir.display()));
+        
     }
     if !source_dir.exists() {
         fs::create_dir(source_dir)?;
-        println!("Missing directory {} created", source_dir.display());
+        console.print(format!("Missing directory {} created", source_dir.display()));
     }
 
     // Iterate over the entries in the source directory
@@ -110,13 +164,13 @@ fn copy_files(source_dir: &Path, destination_dir: &Path) -> io::Result<bool> {
             if !destination_path.exists() || sha256_digest(&source_path)? != sha256_digest(&destination_path)? {
                 // Copy the file to the destination directory
                 fs::copy(&source_path, &destination_path)?;
-                println!("Synced file to {}", destination_path.display());
+                console.print(format!("Synced file to {}", destination_path.display()));
                 changed_files = true;
             }
         } else if source_path.is_dir() {
             let dir_name = source_path.file_name().unwrap();
             let destination_subdir = destination_dir.join(dir_name);
-            match copy_files(&source_path, &destination_subdir) {
+            match copy_files(&source_path, &destination_subdir, console) {
                 Ok(ret) => if ret { changed_files = true; },
                 Err(error) => println!("An error occurred while copying directory: {}", error),
             }
@@ -134,7 +188,7 @@ fn copy_files(source_dir: &Path, destination_dir: &Path) -> io::Result<bool> {
 
             if !source_path.exists() {
                 fs::remove_file(&destination_path)?;
-                println!("Deleted file at {}", destination_path.display());
+                console.print(format!("Deleted file at {}", destination_path.display()));
                 changed_files = true;
             }
         }
@@ -159,11 +213,11 @@ fn main() {
         let destination_dir = format!("{}{}\\", conf.base_out_dir, date.format(&argpasser.format_out));
         let destination_dir = Path::new(&destination_dir);
 
-        match copy_files(&source_dir, &destination_dir) {
-            Ok(ret) => if ret { println!("Files synced!"); },
+        match copy_files(&source_dir, &destination_dir, &argpasser.console) {
+            Ok(ret) => if ret { argpasser.console.print("Files synced!".to_string()); },
             Err(error) => println!("An error occurred: {}", error),
         }
 
-        thread::sleep(Duration::from_secs(5));
+        thread::sleep(Duration::from_millis(1000));
     }
 }
